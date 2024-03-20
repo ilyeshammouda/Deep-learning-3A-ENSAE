@@ -27,7 +27,7 @@ dropout = .2
 
 torch.manual_seed(1337)
 
-with open('input.txt', 'r', encoding='utf-8') as f:
+with open('/Users/ilyeshammouda/Desktop/Ilyes/3A-ENSAE/S2/deep_learning/Deep-learning-3A-ENSAE/session_4/input.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
 # create vocabulary
@@ -148,15 +148,20 @@ class GPT(nn.Module):
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.pos_embedding_table = nn.Embedding(block_size, n_embd)
         # define blocks, a layer norm and a linear layer
+        self.blocks = nn.Sequential(*[Block(n_embd, n_heads) for _ in range(n_layer)])
+        self.layer_norm = nn.LayerNorm(n_embd)
+        self.linear = nn.Linear(n_embd, vocab_size)
         
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
-        token_emb = ??? # (B,T,C)
+        token_emb =self.token_embedding_table(idx) # (B,T,C)
         pos_emb = self.pos_embedding_table(torch.arange(T, device=device)) # (T, C)
-        x = ??? # sum the token embeddings and position embeddings
-        ??? # apply blocks, layer norm and linear layer (leading to the logits variable)
-
+        x = token_emb + pos_emb.unsqueeze(0).repeat(B, 1, 1)   # sum the token embeddings and position embeddings
+         # apply blocks, layer norm and linear layer (leading to the logits variable)
+        x = self.blocks(x)
+        x = self.layer_norm(x)
+        logits = self.linear(x)
         # do not modify the rest of the method (it computes the loss during the forward pass)
         if targets is None:
             loss = None
