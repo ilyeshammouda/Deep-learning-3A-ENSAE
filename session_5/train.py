@@ -59,7 +59,7 @@ batch_size = 64
 
 
 
-# Downloading 
+
 # compute mean and variance of the CIFAR10 dataset - do not modify this code
 from torchvision import datasets
 train_transform = transforms.Compose([transforms.ToTensor()])
@@ -230,8 +230,11 @@ class PlainNet(nn.Module):
         # use x = x.reshape(x.size(0), -1) or a nn.Flatten() layer  before the linear layer
         return x
 
-model_plain_18 = PlainNet(num_classes, layers=[4, 3, 3, 3]).to(device) # plain-18
-print(f'plain-18: {count_parameters(model_plain_18)}')
+#model_plain_18 = PlainNet(num_classes, layers=[4, 3, 3, 3]).to(device) # plain-18
+#print(f'plain-18: {count_parameters(model_plain_18)}')
+
+#model_plain_34 = PlainNet(num_classes, layers=[6, 7, 11, 5]).to(device) # plain-34
+#print(f'plain-34: {count_parameters(model_plain_34)}')
 
 # training params
 # these parameters should work to train your models
@@ -241,7 +244,7 @@ learning_rate = 0.01
 
 # Loss and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(model_plain_18.parameters(), lr=learning_rate, weight_decay = 0.001, momentum = 0.9)
+#optimizer = torch.optim.SGD(model_plain_34.parameters(), lr=learning_rate, weight_decay = 0.001, momentum = 0.9)
 
 # Traininf Function
 def train(model):
@@ -284,5 +287,152 @@ def train(model):
         
         print('Accuracy of the network on the {} validation images: {} %'.format(5000, 100 * correct / total))
 
+
+
+#RESNET
+
+
+# Build a ResidualBlock (i.e regular ResNet block)
+#
+# - a 2D convolution with input dim = in_channels, output dim = out_channels, kernel size = 3, stride = stride, padding = 1 and bias = False
+#   (followed by a batchnorm and a ReLU)
+# - a 2D convolution with input dim = out_channels, output dim = out_channels, kernel size = 3, stride = 1, padding = 1 and bias = False
+#   (followed by a batchnorm and a ReLU)
+#
+#  x -------> conv1 + BN + ReLU ---------> conv2 + BN + ReLU ------- + ----- ReLU ------> out
+#        |                                                           |
+#         ---------------------- downsample -------------------------
+#
+
+class ResidualBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_channels, out_channels, stride = 1, downsample = None):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Sequential(nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
+                                      nn.BatchNorm2d(out_channels),
+                                      nn.ReLU())
+        self.conv2 = nn.Sequential(nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False),
+                                      nn.BatchNorm2d(out_channels),
+                                      )
+        self.downsample = downsample
+        self.relu = nn.ReLU()
+        self.out_channels = out_channels
+        
+    def forward(self, x):
+        out=self.conv1(x)
+        out= self.conv2(out)
+        if self.downsample is not None:
+            out=out+self.downsample(x)
+        else:
+            out+=x
+        out= self.relu(out)
+        return out
+
+
+# Build a Bottleneck block
+#
+# - a 2D convolution with input dim = in_channels, output dim = out_channels, kernel size = 1, bias = False
+#   (followed by a batchnorm and a ReLU)
+# - a 2D convolution with input dim = out_channels, output dim = out_channels, kernel size = 3, stride = stride, padding = 1 and bias = False
+#   (followed by a batchnorm and a ReLU)
+# - a 2D convolution with input dim = out_channels, output dim = out_channels * self.expansion, kernel size = 1, bias = False
+#   (followed by a batchnorm and a ReLU)
+#
+#  x -------> conv1 + BN + ReLU --> conv2 + BN + ReLU --> conv3 + BN + ReLU ----- + ----- ReLU ------> out
+#        |                                                                        |
+#         ------------------------------- downsample -----------------------------
+#
+class Bottleneck(nn.Module):
+    expansion = 4
+    def __init__(self, in_channels, out_channels, stride = 1, downsample = None):
+        super(Bottleneck, self).__init__()
+        # Both self.conv2 and self.downsample layers downsample the input when stride != 1
+        self.conv1 = nn.Sequential(nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+                                      nn.BatchNorm2d(out_channels),
+                                      nn.ReLU())
+        self.conv2 = nn.Sequential(nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
+                                        nn.BatchNorm2d(out_channels),
+                                        nn.ReLU())
+        self.conv3 = nn.Sequential(nn.Conv2d(out_channels, out_channels * self.expansion, kernel_size=1, bias=False),
+                                        nn.BatchNorm2d(out_channels * self.expansion),
+                                        )
+        self.downsample = downsample
+        self.relu = nn.ReLU()
+        self.out_channels = out_channels
+        self.stride = stride
+        
+    def forward(self, x):
+        out=self.conv1(x)
+        out=self.conv2(out)
+        out=self.conv3(out)
+        if self.downsample is not None:
+            out+=self.downsample(x)
+        else:
+            out+=x
+        out=self.relu(out)
+        return out
+
+
+
+
+# do not modify this class
+
+class ResNet(nn.Module):
+    def __init__(self, block, layers, num_classes = 10):
+        super(ResNet, self).__init__()
+        self.inplanes = 64
+        self.conv1 = nn.Sequential(
+                        nn.Conv2d(3, 64, kernel_size = 7, stride = 2, padding = 3, bias = False),
+                        nn.BatchNorm2d(64),
+                        nn.ReLU())
+        self.maxpool = nn.MaxPool2d(kernel_size = 3, stride = 2, padding = 1)
+        self.layer0 = self._make_layer(block, 64, layers[0], stride = 1)
+        self.layer1 = self._make_layer(block, 128, layers[1], stride = 2)
+        self.layer2 = self._make_layer(block, 256, layers[2], stride = 2)
+        self.layer3 = self._make_layer(block, 512, layers[3], stride = 2)
+        self.avgpool = nn.AvgPool2d(7, stride=1)
+        self.fc = nn.Linear(512 * block.expansion, num_classes)
+        
+    def _make_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias = False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+
+        return nn.Sequential(*layers)
+    
+    
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.maxpool(x)
+        x = self.layer0(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+
+        return x
+
+
+#resnet_18 = ResNet(ResidualBlock, [2, 2, 2, 2]).to(device) #resnet-18
+#print(f"resnet-18:{count_parameters(resnet_18)}")
+
+resnet_34 = ResNet(ResidualBlock, [3, 4, 6, 3]).to(device) #resnet-34
+print(f"resnet-34:{count_parameters(resnet_18)}")
+optimizer = torch.optim.SGD(resnet_34.parameters(), lr=learning_rate, weight_decay = 0.001, momentum = 0.9)
 if __name__ == '__main__':
-    train(model_plain_18)
+    #train(model_plain_18)
+    #train(model_plain_34)
+    resnet_34_trained=train(resnet_34)
+    torch.save(resnet_34_trained.state_dict(), 'plain-34-sd.bin')
